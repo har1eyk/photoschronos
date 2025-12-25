@@ -83,6 +83,15 @@ def test_get_date_from_exif_subseconds():
            }
 
 
+def test_get_date_from_file_modify_date():
+    assert Date().from_exif({
+        "FileModifyDate": "2018:02:03 04:05:06"
+    }) == {
+               "date": datetime(2018, 2, 3, 4, 5, 6),
+               "subseconds": ""
+           }
+
+
 def test_get_date_from_exif_invalid():
     assert Date().from_exif({
         "CreateDate": "Invalid"

@@ -52,7 +52,7 @@ class Date:
             keys = date_field.split()
         else:
             keys = ['SubSecCreateDate', 'SubSecDateTimeOriginal', 'CreateDate',
-                    'DateTimeOriginal', 'MediaCreateDate']
+                    'DateTimeOriginal', 'MediaCreateDate', 'FileCreateDate', 'FileModifyDate']
 
         datestr = None
 

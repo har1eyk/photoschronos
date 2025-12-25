@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.date import Date
 
@@ -30,8 +30,9 @@ def test_get_date_from_exif_with_timezone():
         "CreateDate": "2023-01-01 01:01:01",
         "TimeZone": "-07:00",
     }) == {
-               "date": datetime(2022, 12, 31, 18, 1, 1),
-               "subseconds": ""
+               "date": datetime(2023, 1, 1, 8, 1, 1),
+               "subseconds": "",
+               "offset": timedelta(days=-1, seconds=61200)
            }
 
 
@@ -48,8 +49,9 @@ def test_get_date_from_exif_strip_timezone():
     assert Date().from_exif({
         "CreateDate": "2017-01-01 01:01:01-02:00"
     }) == {
-               "date": datetime(2017, 1, 1, 1, 1, 1),
-               "subseconds": ""
+               "date": datetime(2017, 1, 1, 3, 1, 1),
+               "subseconds": "",
+               "offset": timedelta(days=-1, seconds=79200)
            }
 
 
@@ -57,8 +59,9 @@ def test_get_date_from_exif_strip_timezone_sub_sec():
     assert Date().from_exif({
         "SubSecCreateDate": "2019:10:06 11:02:50.575+01:00"
     }) == {
-               "date": datetime(2019, 10, 6, 11, 2, 50),
-               "subseconds": "575"
+               "date": datetime(2019, 10, 6, 10, 2, 50),
+               "subseconds": "575",
+               "offset": timedelta(seconds=3600)
            }
 
 

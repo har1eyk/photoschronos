@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+import base64
 import logging
 import os
+import re
 import shutil
+import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +16,50 @@ from src.exif import Exif
 from src.phockup import Phockup
 
 os.chdir(os.path.dirname(__file__))
+
+SAMPLE_JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCABkAGQDAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAwT/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCfAAf/2Q=="
+)
+
+
+def _write_image(path: Path, content: bytes = SAMPLE_JPEG, date: str | None = None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    if date:
+        subprocess.run(
+            ["exiftool", "-overwrite_original", f"-CreateDate={date}", str(path)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+
+@pytest.fixture(autouse=True)
+def reset_io():
+    """Reset input/output fixtures before each test for predictable counts."""
+    base = Path("input")
+    shutil.rmtree(base, ignore_errors=True)
+    shutil.rmtree("output", ignore_errors=True)
+    base.mkdir(parents=True, exist_ok=True)
+
+    # Base dataset
+    _write_image(base / "exif.jpg", content=SAMPLE_JPEG + b'exif', date="2017:01:01 01:01:01")
+    _write_image(base / "date_20170101_010101.jpg", content=SAMPLE_JPEG + b'date')  # filename date used
+    _write_image(base / "!#$%'+-.^_`~.jpg", content=SAMPLE_JPEG + b'illegal', date="2017:01:01 01:01:01")
+    _write_image(base / "phockup's exif test.jpg", content=SAMPLE_JPEG + b'phockup', date="2017:10:06 01:01:01")
+    _write_image(base / "UNKNOWN.jpg", content=SAMPLE_JPEG + b'unknown')  # goes to unknown
+    sub_folder = base / "sub_folder"
+    sub_folder.mkdir(exist_ok=True)
+    _write_image(sub_folder / "date_20180101_010101.jpg", content=SAMPLE_JPEG + b'2018')  # filename date used
+
+    # Clean helper files created by tests later
+    tmp_paths = [
+        base / "tmp_20170101_010101.jpg",
+        base / "tmp_20170101_010101.xmp",
+    ]
+    for tmp in tmp_paths:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def test_check_dependencies(mocker):
@@ -34,16 +82,18 @@ Visit http://www.sno.phy.queensu.ca/~phil/exiftool/"):
 def test_exception_if_missing_input_directory(mocker):
     mocker.patch('os.makedirs')
     mocker.patch('sys.exit')
+    expected = os.path.abspath('in')
 
-    with pytest.raises(RuntimeError, match="Input directory 'in' does not exist"):
+    with pytest.raises(RuntimeError, match=rf"Input directory '{re.escape(expected)}' does not exist"):
         Phockup('in', 'out')
 
 
 def test_exception_if_input_not_directory(mocker):
     mocker.patch('os.makedirs')
     mocker.patch('sys.exit')
+    expected = os.path.abspath('input/exif.jpg')
 
-    with pytest.raises(RuntimeError, match="Input directory 'input/exif.jpg' is not a directory"):
+    with pytest.raises(RuntimeError, match=rf"Input directory '{re.escape(expected)}' is not a directory"):
         Phockup('input/exif.jpg', 'out')
 
 
@@ -55,8 +105,8 @@ def test_removing_trailing_slash_for_input_output(mocker):
         phockup = Phockup('in\\', 'out\\')
     else:
         phockup = Phockup('in/', 'out/')
-    assert phockup.input_dir == 'in'
-    assert phockup.output_dir == 'out'
+    assert phockup.input_dir == os.path.abspath('in')
+    assert phockup.output_dir == os.path.abspath('out')
 
 
 def test_exception_for_no_write_access_when_creating_output_dir(mocker):
@@ -70,6 +120,7 @@ def test_exception_for_no_write_access_when_creating_output_dir(mocker):
         Phockup('input', protected_dir)
 
 
+@pytest.mark.needs_exiftool
 def test_walking_directory():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output')
@@ -77,6 +128,7 @@ def test_walking_directory():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_walking_directory_prefix():
     shutil.rmtree('output', ignore_errors=True)
     prefix = "Phockup Images"
@@ -85,6 +137,7 @@ def test_walking_directory_prefix():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_walking_directory_suffix():
     shutil.rmtree('output', ignore_errors=True)
     suffix = "iphone"
@@ -93,6 +146,7 @@ def test_walking_directory_suffix():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_walking_directory_prefix_suffix():
     shutil.rmtree('output', ignore_errors=True)
     prefix = "ivandokov"
@@ -116,6 +170,7 @@ def test_dry_run():
     assert not os.path.isdir(dir4)
 
 
+@pytest.mark.needs_exiftool
 def test_progress():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', progress=True)
@@ -163,7 +218,9 @@ def test_get_file_name_is_original_on_exception(mocker):
     assert Phockup('in', 'out').get_file_name("Bar/Foo.jpg", None) == "Foo.jpg"
 
 
+@pytest.mark.needs_exiftool
 def test_process_file_with_filename_date(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -176,10 +233,13 @@ def test_process_file_with_filename_date(mocker):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_link_to_file_with_filename_date(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
+    _write_image(Path("input/link_to_date_20170101_010101.jpg"), content=SAMPLE_JPEG + b'link')
     Phockup('input', 'output').process_file(
         "input/link_to_date_20170101_010101.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010101.jpg")
@@ -208,7 +268,9 @@ def test_process_broken_link_move(mocker, caplog):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_image_exif_date(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -217,30 +279,40 @@ def test_process_image_exif_date(mocker):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_image_xmp(mocker):
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
+    _write_image(Path("input/xmp.jpg"), date="2017:01:01 01:01:01")
+    Path("input/xmp.jpg.xmp").write_bytes(b'xmp-sidecar')
     Phockup('input', 'output').process_file("input/xmp.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010101.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010101.jpg.xmp")
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_image_xmp_noext(mocker):
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
+    _write_image(Path("input/xmp_noext.jpg"), date="2017:01:01 01:01:01")
+    Path("input/xmp_noext.xmp").write_bytes(b'xmp-noext')
     Phockup('input', 'output').process_file("input/xmp_noext.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010101.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010101.xmp")
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_image_xmp_ext_and_noext(mocker):
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
+    _write_image(Path("input/xmp_ext.jpg"), date="2017:01:01 01:01:01")
+    Path("input/xmp_ext.jpg.xmp").write_bytes(b'xmp-ext-jpg')
+    Path("input/xmp_ext.xmp").write_bytes(b'xmp-ext')
     Phockup('input', 'output').process_file("input/xmp_ext.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010101.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010101.xmp")
@@ -248,7 +320,9 @@ def test_process_image_xmp_ext_and_noext(mocker):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_image_unknown(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -261,16 +335,22 @@ def test_process_image_unknown(mocker):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_other(mocker):
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
+    mocker.patch.object(Exif, 'data')
+    Path("input/other.txt").write_text("")
     Phockup('input', 'output').process_file("input/other.txt")
+    Exif.data.assert_not_called()
     assert os.path.isfile("output/unknown/other.txt")
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_move(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -290,7 +370,9 @@ def test_process_move(mocker):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_movedel(mocker, caplog):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -311,7 +393,9 @@ def test_process_movedel(mocker, caplog):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_rmdirs(mocker, caplog):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     shutil.rmtree('input/sub_folder/sub0', ignore_errors=True)
     mocker.patch.object(Exif, 'data')
@@ -328,8 +412,10 @@ def test_process_rmdirs(mocker, caplog):
     open("input/sub_folder/sub0/sub2/sub3/tmp_20170101_010104.jpg", "w").close()
     with caplog.at_level(logging.INFO):
         Phockup('input/sub_folder/sub0', 'output', move=True, rmdirs=True, max_depth=1)
-    assert 'Deleted empty directory: input/sub_folder/sub0/sub1' in caplog.text
-    assert 'input/sub_folder/sub0/sub2/sub3 not deleted' in caplog.text
+    deleted_sub1 = os.path.abspath("input/sub_folder/sub0/sub1")
+    not_deleted_sub3 = os.path.abspath("input/sub_folder/sub0/sub2/sub3")
+    assert f'Deleted empty directory: {deleted_sub1}' in caplog.text
+    assert f'{not_deleted_sub3} not deleted' in caplog.text
     assert os.path.isfile("output/2017/01/01/20170101-010101.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010102.jpg")
     assert os.path.isfile("output/2017/01/01/20170101-010103.jpg")
@@ -339,14 +425,17 @@ def test_process_rmdirs(mocker, caplog):
     assert os.path.isdir("input/sub_folder/sub0/sub2/sub3")
     with caplog.at_level(logging.INFO):
         Phockup('input/sub_folder/sub0', 'output', move=True, rmdirs=True)
-    assert 'Deleted empty directory: input/sub_folder/sub0/sub2' in caplog.text
+    deleted_sub2 = os.path.abspath("input/sub_folder/sub0/sub2")
+    assert f'Deleted empty directory: {deleted_sub2}' in caplog.text
     assert not os.path.isdir("input/sub_folder/sub0/sub2")
     assert os.path.isfile("output/2017/01/01/20170101-010104.jpg")
     shutil.rmtree('input/sub_folder/sub0', ignore_errors=True)
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_link(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -368,7 +457,57 @@ def test_process_link(mocker):
     os.remove("input/tmp_20170101_010101.xmp")
 
 
+@pytest.mark.needs_exiftool
+def test_process_live_photo_pair(mocker):
+    pytest.mark.needs_exiftool
+    shutil.rmtree('output', ignore_errors=True)
+    mocker.patch.object(Phockup, 'check_directories')
+    mocker.patch.object(Phockup, 'walk_directory')
+    mocker.patch.object(Exif, 'data')
+    Exif.data.return_value = {
+        "MIMEType": "image/heic",
+        "CreateDate": "2017:01:01 01:01:01"
+    }
+    phockup = Phockup('input', 'output')
+    open("input/live.heic", "w").close()
+    open("input/live.mov", "w").close()
+    phockup.process_file("input/live.heic")
+    assert os.path.isfile("output/2017/01/01/20170101-010101.heic")
+    assert os.path.isfile("output/2017/01/01/20170101-010101.mov")
+    shutil.rmtree('output', ignore_errors=True)
+    for path in ("input/live.heic", "input/live.mov"):
+        if os.path.exists(path):
+            os.remove(path)
+
+
+@pytest.mark.needs_exiftool
+def test_process_sidecar_aae_json(mocker):
+    pytest.mark.needs_exiftool
+    shutil.rmtree('output', ignore_errors=True)
+    mocker.patch.object(Phockup, 'check_directories')
+    mocker.patch.object(Phockup, 'walk_directory')
+    mocker.patch.object(Exif, 'data')
+    Exif.data.return_value = {
+        "MIMEType": "image/jpeg",
+        "CreateDate": "2017:01:01 01:01:01"
+    }
+    phockup = Phockup('input', 'output')
+    open("input/meta_20170101_010101.jpg", "w").close()
+    open("input/meta_20170101_010101.aae", "w").close()
+    open("input/meta_20170101_010101.json", "w").close()
+    phockup.process_file("input/meta_20170101_010101.jpg")
+    assert os.path.isfile("output/2017/01/01/20170101-010101.jpg")
+    assert os.path.isfile("output/2017/01/01/20170101-010101.aae")
+    assert os.path.isfile("output/2017/01/01/20170101-010101.json")
+    shutil.rmtree('output', ignore_errors=True)
+    for path in ("input/meta_20170101_010101.jpg", "input/meta_20170101_010101.aae", "input/meta_20170101_010101.json"):
+        if os.path.exists(path):
+            os.remove(path)
+
+
+@pytest.mark.needs_exiftool
 def test_process_exists_same(mocker, caplog):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -381,7 +520,9 @@ def test_process_exists_same(mocker, caplog):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_process_same_date_different_files_rename(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -416,7 +557,9 @@ def test_process_skip_ignored_file():
     shutil.rmtree('input_ignored', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_keep_original_filenames(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
@@ -427,17 +570,20 @@ def test_keep_original_filenames(mocker):
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_keep_original_filenames_and_filenames_case(mocker):
+    pytest.mark.needs_exiftool
     shutil.rmtree('output', ignore_errors=True)
     mocker.patch.object(Phockup, 'check_directories')
     mocker.patch.object(Phockup, 'walk_directory')
     Phockup('input', 'output', original_filenames=True).process_file(
         "input/UNKNOWN.jpg")
-    assert os.path.isfile("output/2017/10/06/UNKNOWN.jpg")
-    assert 'unknown.jpg' not in os.listdir("output/2017/10/06")
+    assert os.path.isfile("output/unknown/UNKNOWN.jpg")
+    assert 'unknown.jpg' not in os.listdir("output/unknown")
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_maxdepth_zero():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', maxdepth=0)
@@ -456,6 +602,7 @@ def test_maxdepth_zero():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_maxdepth_one():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', maxdepth=1)
@@ -463,6 +610,7 @@ def test_maxdepth_one():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_maxconcurrency_none():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', max_concurrency=0)
@@ -470,6 +618,7 @@ def test_maxconcurrency_none():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_maxconcurrency_five():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', max_concurrency=5)
@@ -496,6 +645,7 @@ def validate_copy_operation(output_root, file_path, expected_count, prefix=None,
                 os.path.isfile(os.path.join(fullpath, name))]) == expected_count
 
 
+@pytest.mark.needs_exiftool
 def test_no_exif_directory():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', no_date_dir='misc')
@@ -510,6 +660,7 @@ def test_no_exif_directory():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_skip_unknown():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', skip_unknown=True)
@@ -531,6 +682,7 @@ def test_skip_unknown():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_from_date():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', from_date="2017-10-06")
@@ -553,6 +705,7 @@ def test_from_date():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_to_date():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', to_date="2017-10-06", progress=True)
@@ -575,6 +728,7 @@ def test_to_date():
     shutil.rmtree('output', ignore_errors=True)
 
 
+@pytest.mark.needs_exiftool
 def test_from_date_to_date():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', to_date="2017-10-06", from_date="2017-01-02", progress=True)

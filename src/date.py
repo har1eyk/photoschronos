@@ -8,6 +8,19 @@ class Date:
         self.filename = filename
 
     @staticmethod
+    def _parse_offset(offset_str):
+        """Parse timezone offsets like +02:00 or -0700 into a timedelta."""
+        if not offset_str:
+            return None
+        match = re.search(r'([+-])(\d{2}):?(\d{2})', offset_str)
+        if not match:
+            return None
+        sign = 1 if match.group(1) == '+' else -1
+        hours = int(match.group(2))
+        minutes = int(match.group(3))
+        return timedelta(hours=sign * hours, minutes=sign * minutes)
+
+    @staticmethod
     def parse(date: str) -> str:
         date = date.replace('YYYY', '%Y')  # 2017 (year)
         date = date.replace('YY', '%y')  # 17 (year)
@@ -39,7 +52,7 @@ class Date:
             keys = date_field.split()
         else:
             keys = ['SubSecCreateDate', 'SubSecDateTimeOriginal', 'CreateDate',
-                    'DateTimeOriginal']
+                    'DateTimeOriginal', 'MediaCreateDate']
 
         datestr = None
 
@@ -58,43 +71,59 @@ class Date:
         else:
             parsed_date = {'date': None, 'subseconds': ''}
 
-        # apply TimeZone if available
-        if exif.get('TimeZone') is not None and isinstance(exif['TimeZone'], str):
-            timezonedata = exif['TimeZone'].split(':')
-            if timezonedata and len(timezonedata) == 2:
-                parsed_date['date'] = parsed_date['date'] + timedelta(hours=int(timezonedata[0]), minutes=int(timezonedata[1]))
+        # apply TimeZone if available and offset wasn't already in the datetime string
+        if parsed_date.get('date') is not None and parsed_date.get('offset') is None:
+            for tz_key in ('OffsetTimeOriginal', 'OffsetTimeDigitized', 'TimeZone'):
+                offset = self._parse_offset(exif.get(tz_key)) if exif.get(tz_key) else None
+                if offset:
+                    parsed_date['date'] = parsed_date['date'] - offset
+                    parsed_date['offset'] = offset
+                    break
 
         if parsed_date.get('date') is not None:
+            if parsed_date.get('offset') is None:
+                parsed_date.pop('offset', None)
             return parsed_date
         else:
             if self.filename:
                 return self.from_filename(user_regex, timestamp)
             else:
+                parsed_date.pop('offset', None)
                 return parsed_date
 
     @staticmethod
     def from_datestring(datestr) -> dict:
-        datestr = datestr.split('.')
-        date = datestr[0]
-        if len(datestr) > 1:
-            subseconds = datestr[1]
-        else:
-            subseconds = ''
-        search = r'(.*)([+-]\d{2}:\d{2})'
-        if re.search(search, date) is not None:
-            date = re.sub(search, r'\1', date)
-        try:
-            parsed_date_time = Date.strptime(date, '%Y:%m:%d %H:%M:%S')
-        except ValueError:
+        datestr_parts = datestr.split('.')
+        date = datestr_parts[0]
+        subseconds = datestr_parts[1] if len(datestr_parts) > 1 else ''
+
+        # Extract timezone offset from either portion, trimming it away from parsed values
+        offset = None
+        offset_search = r'(.*)([+-]\d{2}:?\d{2})'
+        if re.search(offset_search, date) is not None:
+            offset_str = re.sub(offset_search, r'\2', date)
+            date = re.sub(offset_search, r'\1', date)
+            offset = Date._parse_offset(offset_str)
+        if re.search(offset_search, subseconds) is not None:
+            offset_str = re.sub(offset_search, r'\2', subseconds)
+            subseconds = re.sub(offset_search, r'\1', subseconds)
+            offset = Date._parse_offset(offset_str) or offset
+
+        parsed_date_time = None
+        for fmt in ('%Y:%m:%d %H:%M:%S', '%Y-%m-%d %H:%M:%S'):
             try:
-                parsed_date_time = Date.strptime(date, '%Y-%m-%d %H:%M:%S')
+                parsed_date_time = Date.strptime(date, fmt)
+                break
             except ValueError:
-                parsed_date_time = None
-        if re.search(search, subseconds) is not None:
-            subseconds = re.sub(search, r'\1', subseconds)
+                continue
+
+        if parsed_date_time and offset:
+            parsed_date_time = parsed_date_time - offset
+
         return {
             'date': parsed_date_time,
-            'subseconds': subseconds
+            'subseconds': subseconds,
+            'offset': offset
         }
 
     def from_filename(self, user_regex, timestamp=None):

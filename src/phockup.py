@@ -20,6 +20,21 @@ ignored_files = ('.DS_Store', 'Thumbs.db')
 class Phockup:
     DEFAULT_DIR_FORMAT = ['%Y', '%m', '%d']
     DEFAULT_NO_DATE_DIRECTORY = "unknown"
+    MEDIA_EXTENSIONS = {
+        '.jpg', '.jpeg', '.jpe', '.png', '.gif', '.bmp', '.tif', '.tiff',
+        '.heic', '.heif', '.avif', '.jxl', '.dng', '.cr2', '.cr3', '.nef',
+        '.arw', '.orf', '.raf', '.rw2', '.srw', '.pef', '.mp4', '.mov',
+        '.m4v', '.avi', '.mts', '.m2ts', '.3gp', '.mkv'
+    }
+    PAIRED_VIDEO_MAP = {
+        '.heic': ('.mov', '.mp4'),
+        '.heif': ('.mov', '.mp4'),
+        '.jpg': ('.mov', '.mp4'),
+        '.jpeg': ('.mov', '.mp4'),
+        '.dng': ('.mov', '.mp4'),
+        '.raf': ('.mov', '.mp4'),
+    }
+    SIDECAR_EXTENSIONS = ('.xmp', '.aae', '.json')
 
     def __init__(self, input_dir, output_dir, **args):
         start_time = time.time()
@@ -29,8 +44,8 @@ class Phockup:
         self.files_moved = 0
         self.files_copied = 0
 
-        input_dir = os.path.expanduser(input_dir)
-        output_dir = os.path.expanduser(output_dir)
+        input_dir = os.path.abspath(os.path.expanduser(input_dir))
+        output_dir = os.path.abspath(os.path.expanduser(output_dir))
 
         if input_dir.endswith(os.path.sep):
             input_dir = input_dir[:-1]
@@ -50,8 +65,8 @@ class Phockup:
         self.timestamp = args.get('timestamp', False)
         self.date_field = args.get('date_field', False)
         self.skip_unknown = args.get("skip_unknown", False)
-        self.movedel = args.get("movedel", False),
-        self.rmdirs = args.get("rmdirs", False),
+        self.movedel = bool(args.get("movedel", False))
+        self.rmdirs = bool(args.get("rmdirs", False))
         self.dry_run = args.get('dry_run', False)
         self.progress = args.get('progress', False)
         self.max_depth = args.get('max_depth', -1)
@@ -76,19 +91,15 @@ class Phockup:
             logger.warning("Dry-run phockup (does a trial run with no permanent changes)...")
 
         self.check_directories()
-        # Get the number of files
-        if self.progress:
-            file_count = self.get_file_count()
-            with tqdm(desc=f"Progressing: '{self.input_dir}' ",
-                      total=file_count,
-                      unit="file",
-                      position=0,
-                      leave=True,
-                      ascii=(sys.platform == 'win32')) as self.pbar:
-                self.walk_directory()
-        else:
-            self.pbar = None
-            self.walk_directory()
+        self.pbar = tqdm(
+            desc=f"Progressing: '{self.input_dir}' ",
+            total=None,
+            unit="file",
+            position=0,
+            leave=True,
+            ascii=(sys.platform == 'win32'),
+        ) if self.progress else None
+        self.walk_directory()
 
         if self.move and self.rmdirs:
             self.rm_subdirs()
@@ -121,6 +132,8 @@ class Phockup:
         If output does not exist it tries to create it or exit with error.
         """
 
+        if (os.path.isfile(self.input_dir) or os.path.splitext(self.input_dir)[1]) and not os.path.isdir(self.input_dir):
+            raise RuntimeError(f"Input directory '{self.input_dir}' is not a directory")
         if not os.path.exists(self.input_dir):
             raise RuntimeError(f"Input directory '{self.input_dir}' does not exist")
         if not os.path.isdir(self.input_dir):
@@ -138,25 +151,34 @@ class Phockup:
         Walk input directory recursively and call process_file for each file
         except the ignored ones.
         """
+        file_iterator = self._iter_files()
 
-        # Walk the directory
+        if self.max_concurrency > 1:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.max_concurrency) as executor:
+                try:
+                    for _ in executor.map(self.process_file, file_iterator):
+                        pass
+                except KeyboardInterrupt:
+                    logger.warning(
+                        f"Received interrupt. Shutting down {self.max_concurrency} workers...")
+                    executor.shutdown(wait=False)
+                    return
+        else:
+            try:
+                for file_path in file_iterator:
+                    self.process_file(file_path)
+            except KeyboardInterrupt:
+                logger.warning("Received interrupt. Shutting down...")
+                return
+
+    def _iter_files(self):
         for root, dirnames, files in os.walk(self.input_dir):
             files.sort()
-            file_paths_to_process = []
             for filename in files:
                 if filename in ignored_files:
                     continue
-                file_paths_to_process.append(os.path.join(root, filename))
-            if self.max_concurrency > 1:
-                if not self.process_files(file_paths_to_process):
-                    return
-            else:
-                try:
-                    for file_path in file_paths_to_process:
-                        self.process_file(file_path)
-                except KeyboardInterrupt:
-                    logger.warning("Received interrupt. Shutting down...")
-                    return
+                yield os.path.join(root, filename)
             if root.count(os.sep) >= self.stop_depth:
                 del dirnames[:]
 
@@ -254,22 +276,6 @@ class Phockup:
         except TypeError:
             return os.path.basename(original_filename)
 
-    def process_files(self, file_paths_to_process):
-        # With all the appropriate files in the directory added to the
-        # list, process the directory concurrently using threads
-        with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.max_concurrency) as executor:
-            try:
-                for _ in executor.map(self.process_file,
-                                      file_paths_to_process):
-                    pass
-            except KeyboardInterrupt:
-                logger.warning(
-                        f"Received interrupt. Shutting down {self.max_concurrency} workers...")
-                executor.shutdown(wait=True)
-                return False
-        return True
-
     def process_file(self, filename):
         """
         Process the file using the selected strategy
@@ -319,7 +325,19 @@ but looking for '{self.file_type}'"
                     break
 
             if os.path.isfile(target_file):
-                if filename != target_file and filecmp.cmp(filename, target_file, shallow=False):
+                try:
+                    source_stats = os.stat(filename)
+                    target_stats = os.stat(target_file)
+                except FileNotFoundError:
+                    progress = f'{progress} => skipped, no such file or directory'
+                    if self.progress:
+                        self.pbar.write(progress)
+                    logger.warning(progress)
+                    break
+
+                if source_stats.st_size == target_stats.st_size and (
+                        source_stats.st_mtime == target_stats.st_mtime or
+                        filecmp.cmp(filename, target_file, shallow=False)):
                     if self.movedel and self.move and self.skip_unknown:
                         if not self.dry_run:
                             os.remove(filename)
@@ -349,7 +367,7 @@ but looking for '{self.file_type}'"
                     try:
                         self.files_copied += 1
                         if not self.dry_run:
-                            shutil.copy2(filename, target_file)
+                            self.copy_file(filename, target_file)
                     except FileNotFoundError:
                         progress = f'{progress} => skipped, no such file or directory'
                         if self.progress:
@@ -362,7 +380,7 @@ but looking for '{self.file_type}'"
                     self.pbar.write(progress)
                 logger.info(progress)
 
-                self.process_xmp(filename, target_file_name, suffix, output)
+                self.process_sidecars(filename, target_file_name, suffix, output)
                 break
 
             suffix += 1
@@ -377,8 +395,11 @@ but looking for '{self.file_type}'"
         """
         Returns target file name and path
         """
-        exif_data = Exif(filename).data()
+        exif_data = None
         target_file_type = None
+
+        if self.should_inspect_exif(filename):
+            exif_data = Exif(filename).data()
 
         if exif_data and 'MIMEType' in exif_data:
             target_file_type = self.get_file_type(exif_data['MIMEType'])
@@ -398,32 +419,59 @@ but looking for '{self.file_type}'"
         target_file_path = os.path.sep.join([output, target_file_name])
         return output, target_file_name, target_file_path, target_file_type, date
 
-    def process_xmp(self, original_filename, file_name, suffix, output):
+    def should_inspect_exif(self, filename):
+        ext = os.path.splitext(filename)[1].lower()
+        return ext in self.MEDIA_EXTENSIONS
+
+    def process_sidecars(self, original_filename, file_name, suffix, output):
         """
-        Process xmp files. These are metadata for RAW images
+        Process companion metadata (xmp/aae/json) and paired live-photo videos.
         """
-        xmp_original_with_ext = original_filename + '.xmp'
-        xmp_original_without_ext = os.path.splitext(original_filename)[0] + '.xmp'
+        suffix_str = f'-{suffix}' if suffix > 1 else ''
+        base_no_ext = os.path.splitext(original_filename)[0]
+        dest_base_no_ext = os.path.splitext(file_name)[0]
 
-        suffix = f'-{suffix}' if suffix > 1 else ''
+        # traditional XMP placements
+        xmp_candidates = {
+            original_filename + '.xmp': f'{file_name}{suffix_str}.xmp',
+            f'{base_no_ext}.xmp': f'{dest_base_no_ext}{suffix_str}.xmp',
+        }
 
-        xmp_files = {}
+        for original, target in xmp_candidates.items():
+            if os.path.isfile(original):
+                self._transfer_companion(original, os.path.sep.join([output, target]))
 
-        if os.path.isfile(xmp_original_with_ext):
-            xmp_target = f'{file_name}{suffix}.xmp'
-            xmp_files[xmp_original_with_ext] = xmp_target
-        if os.path.isfile(xmp_original_without_ext):
-            xmp_target = f'{(os.path.splitext(file_name)[0])}{suffix}.xmp'
-            xmp_files[xmp_original_without_ext] = xmp_target
+        # additional sidecars (Apple AAE, Google JSON, etc.)
+        for ext in self.SIDECAR_EXTENSIONS:
+            original = f'{base_no_ext}{ext}'
+            target = f'{dest_base_no_ext}{suffix_str}{ext}'
+            if os.path.isfile(original):
+                self._transfer_companion(original, os.path.sep.join([output, target]))
 
-        for original, target in xmp_files.items():
-            xmp_path = os.path.sep.join([output, target])
-            logger.info(f'{original} => {xmp_path}')
+        # paired live-photo style video assets
+        ext = os.path.splitext(original_filename)[1].lower()
+        for companion_ext in self.PAIRED_VIDEO_MAP.get(ext, ()):
+            companion_file = f'{base_no_ext}{companion_ext}'
+            if os.path.isfile(companion_file):
+                target = f'{dest_base_no_ext}{suffix_str}{companion_ext}'
+                self._transfer_companion(companion_file, os.path.sep.join([output, target]))
 
-            if not self.dry_run:
-                if self.move:
-                    shutil.move(original, xmp_path)
-                elif self.link:
-                    os.link(original, xmp_path)
-                else:
-                    shutil.copy2(original, xmp_path)
+    def _transfer_companion(self, original, target_path):
+        logger.info(f'{original} => {target_path}')
+        if self.dry_run:
+            return
+        if os.path.exists(target_path):
+            logger.info(f"Skipping companion copy, target exists: {target_path}")
+            return
+        if self.move:
+            shutil.move(original, target_path)
+        elif self.link:
+            os.link(original, target_path)
+        else:
+            self.copy_file(original, target_path)
+
+    def copy_file(self, source, destination, buffer_size=8 * 1024 * 1024):
+        """Copy file content and metadata with a larger buffer for big media files."""
+        with open(source, 'rb') as src, open(destination, 'wb') as dst:
+            shutil.copyfileobj(src, dst, length=buffer_size)
+        shutil.copystat(source, destination, follow_symlinks=True)

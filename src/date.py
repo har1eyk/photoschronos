@@ -52,7 +52,8 @@ class Date:
             keys = date_field.split()
         else:
             keys = ['SubSecCreateDate', 'SubSecDateTimeOriginal', 'CreateDate',
-                    'DateTimeOriginal', 'MediaCreateDate', 'FileCreateDate', 'FileModifyDate']
+                    'DateTimeOriginal', 'MediaCreateDate']
+            file_date_keys = ['FileCreateDate', 'FileModifyDate']
 
         datestr = None
 
@@ -80,16 +81,23 @@ class Date:
                     parsed_date['offset'] = offset
                     break
 
+        if parsed_date.get('date') is None and self.filename:
+            filename_date = self.from_filename(user_regex, timestamp)
+            if filename_date:
+                return filename_date
+
+        if parsed_date.get('date') is None and not date_field:
+            for key in file_date_keys:
+                if key in (exif or {}) and isinstance(exif[key], str) and not exif[key].startswith('0000'):
+                    parsed_date = self.from_datestring(exif[key])
+                    break
+
         if parsed_date.get('date') is not None:
             if parsed_date.get('offset') is None:
                 parsed_date.pop('offset', None)
             return parsed_date
-        else:
-            if self.filename:
-                return self.from_filename(user_regex, timestamp)
-            else:
-                parsed_date.pop('offset', None)
-                return parsed_date
+        parsed_date.pop('offset', None)
+        return parsed_date
 
     @staticmethod
     def from_datestring(datestr) -> dict:

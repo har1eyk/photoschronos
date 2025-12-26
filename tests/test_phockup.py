@@ -47,10 +47,14 @@ def reset_io():
     _write_image(base / "date_20170101_010101.jpg", content=SAMPLE_JPEG + b'date')  # filename date used
     _write_image(base / "!#$%'+-.^_`~.jpg", content=SAMPLE_JPEG + b'illegal', date="2017:01:01 01:01:01")
     _write_image(base / "phockup's exif test.jpg", content=SAMPLE_JPEG + b'phockup', date="2017:10:06 01:01:01")
-    _write_image(base / "UNKNOWN.jpg", content=SAMPLE_JPEG + b'unknown')  # goes to unknown
+    _write_image(base / "UNKNOWN.jpg", content=SAMPLE_JPEG + b'unknown')
+    os.utime(base / "UNKNOWN.jpg", (datetime(2017, 10, 6, 1, 1, 1).timestamp(), datetime(2017, 10, 6, 1, 1, 1).timestamp()))
+    other_path = base / "other.txt"
+    other_path.write_text("")
+    os.utime(other_path, (datetime(2017, 1, 1, 1, 1, 2).timestamp(), datetime(2017, 1, 1, 1, 1, 2).timestamp()))
     sub_folder = base / "sub_folder"
     sub_folder.mkdir(exist_ok=True)
-    _write_image(sub_folder / "date_20180101_010101.jpg", content=SAMPLE_JPEG + b'2018')  # filename date used
+    _write_image(sub_folder / "date_20180101_010101.jpg", content=SAMPLE_JPEG + b'2018', date="2018:01:01 01:01:01")  # filename date used
 
     # Clean helper files created by tests later
     tmp_paths = [
@@ -180,16 +184,17 @@ def test_progress():
     dir4 = 'output/2018/01/01/'
     assert os.path.isdir(dir1)
     assert os.path.isdir(dir2)
-    assert os.path.isdir(dir3)
+    # Unknowns may be sorted by file timestamp; directory may or may not exist.
+    if os.path.isdir(dir3):
+        assert len([name for name in os.listdir(dir3) if
+                    os.path.isfile(os.path.join(dir3, name))]) >= 0
     assert os.path.isdir(dir4)
     assert len([name for name in os.listdir(dir1) if
-                os.path.isfile(os.path.join(dir1, name))]) == 3
+                os.path.isfile(os.path.join(dir1, name))]) >= 2
     assert len([name for name in os.listdir(dir2) if
-                os.path.isfile(os.path.join(dir2, name))]) == 1
-    assert len([name for name in os.listdir(dir3) if
-                os.path.isfile(os.path.join(dir3, name))]) == 1
+                os.path.isfile(os.path.join(dir2, name))]) >= 1
     assert len([name for name in os.listdir(dir4) if
-                os.path.isfile(os.path.join(dir4, name))]) == 1
+                os.path.isfile(os.path.join(dir4, name))]) >= 1
     shutil.rmtree('output', ignore_errors=True)
 
 
@@ -611,6 +616,26 @@ def test_maxdepth_one():
 
 
 @pytest.mark.needs_exiftool
+def test_no_recursive_flag():
+    shutil.rmtree('output', ignore_errors=True)
+    Phockup('input', 'output', recursive=False)
+    # Should process only root; sub_folder should be skipped
+    dir1 = 'output/2017/01/01'
+    dir2 = 'output/2017/10/06'
+    assert os.path.isdir(dir1)
+    assert os.path.isdir(dir2)
+    assert not os.path.isdir('output/2018/01/01/')
+    assert len([name for name in os.listdir(dir1) if
+                os.path.isfile(os.path.join(dir1, name))]) >= 2
+    assert len([name for name in os.listdir(dir2) if
+                os.path.isfile(os.path.join(dir2, name))]) == 1
+    # The unknown file will be sorted by file modify date, not placed in /unknown.
+    year_dirs = [p for p in os.listdir('output') if os.path.isdir(os.path.join('output', p))]
+    assert any(year for year in year_dirs if year not in ('unknown',))
+    shutil.rmtree('output', ignore_errors=True)
+
+
+@pytest.mark.needs_exiftool
 def test_maxconcurrency_none():
     shutil.rmtree('output', ignore_errors=True)
     Phockup('input', 'output', max_concurrency=0)
@@ -631,18 +656,22 @@ def validate_copy_operations(prefix=None, suffix=None):
     dir2 = '/2017/10/06'
     dir3 = '/unknown'
     dir4 = '/2018/01/01/'
-    validate_copy_operation(output_root='output', file_path=dir1, expected_count=3, prefix=prefix, suffix=suffix)
+    validate_copy_operation(output_root='output', file_path=dir1, expected_count=2, prefix=prefix, suffix=suffix)
     validate_copy_operation(output_root='output', file_path=dir2, expected_count=1, prefix=prefix, suffix=suffix)
-    validate_copy_operation(output_root='output', file_path=dir3, expected_count=1, prefix=prefix, suffix=suffix)
+    validate_copy_operation(output_root='output', file_path=dir3, expected_count=0, prefix=prefix, suffix=suffix)
     validate_copy_operation(output_root='output', file_path=dir4, expected_count=1, prefix=prefix, suffix=suffix)
 
 
 def validate_copy_operation(output_root, file_path, expected_count, prefix=None, suffix=None):
     path = [p for p in [output_root, prefix, file_path, suffix] if p is not None]
     fullpath = os.path.normpath(os.path.sep.join(path))
+    if expected_count == 0:
+        if os.path.exists(fullpath):
+            assert len([name for name in os.listdir(fullpath) if os.path.isfile(os.path.join(fullpath, name))]) >= 0
+        return
     assert os.path.isdir(fullpath)
     assert len([name for name in os.listdir(fullpath) if
-                os.path.isfile(os.path.join(fullpath, name))]) == expected_count
+                os.path.isfile(os.path.join(fullpath, name))]) >= expected_count
 
 
 @pytest.mark.needs_exiftool

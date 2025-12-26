@@ -340,6 +340,24 @@ Example:
             """,
     )
 
+    parser.add_argument(
+        '--recursive',
+        dest='recursive',
+        action='store_true',
+        default=True,
+        help="""\
+            Traverse subdirectories when organizing files (default: enabled).
+            Disable recursion with --no-recursive to only process the top-level of INPUTDIR.
+            """,
+    )
+
+    parser.add_argument(
+        '--no-recursive',
+        dest='recursive',
+        action='store_false',
+        help="Disable descending into subdirectories; process only INPUTDIR itself.",
+    )
+
     return parser.parse_args(args)
 
 

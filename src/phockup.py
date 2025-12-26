@@ -69,7 +69,9 @@ class Phockup:
         self.rmdirs = bool(args.get("rmdirs", False))
         self.dry_run = args.get('dry_run', False)
         self.progress = args.get('progress', False)
-        self.max_depth = args.get('max_depth', -1)
+        base_max_depth = args.get('max_depth', -1)
+        recursive = args.get('recursive', True)
+        self.max_depth = 0 if not recursive else base_max_depth
         # default to concurrency of one to retain existing behavior
         self.max_concurrency = args.get("max_concurrency", 1)
 

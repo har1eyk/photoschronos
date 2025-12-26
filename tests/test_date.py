@@ -109,15 +109,24 @@ def test_get_date_from_filename():
 
 
 def test_get_date_filename_invalid():
-    assert Date("IMG_20170101_999999.jpg").from_exif({}) is None
+    assert Date("IMG_20170101_999999.jpg").from_exif({}) == {
+        "date": None,
+        "subseconds": ""
+    }
 
 
 def test_get_date_none_on_no_info():
-    assert Date("Foo.jpg").from_exif({}) is None
+    assert Date("Foo.jpg").from_exif({}) == {
+        "date": None,
+        "subseconds": ""
+    }
 
 
 def test_get_date_none_on_no_error():
-    assert Date("IMG_2017_01.jpg").from_exif({}) is None
+    assert Date("IMG_2017_01.jpg").from_exif({}) == {
+        "date": None,
+        "subseconds": ""
+    }
 
 
 def test_get_date_custom_regex():
@@ -138,7 +147,10 @@ def test_get_date_custom_regex_invalid():
     Return none because there is not enough information in the filename.
     """
     date_regex = re.compile(r"(?P<hour>\d{2})\.(?P<minute>\d{2})\.(?P<second>\d{2})")       # noqa: E501
-    assert Date("19.20.00.jpg").from_exif({}, False, date_regex) is None
+    assert Date("19.20.00.jpg").from_exif({}, False, date_regex) == {
+        "date": None,
+        "subseconds": ""
+    }
 
 
 def test_get_date_custom_regex_no_match():
@@ -146,7 +158,10 @@ def test_get_date_custom_regex_no_match():
     A valid regex with a non-matching filename.
     """
     date_regex = re.compile(r"(?P<day>\d{2})\.(?P<month>\d{2})\.(?P<year>\d{4})[_-]?(?P<hour>\d{2})\.(?P<minute>\d{2})\.(?P<second>\d{2})")     # noqa: E501
-    assert Date("Foo.jpg").from_exif({}, False, date_regex) is None
+    assert Date("Foo.jpg").from_exif({}, False, date_regex) == {
+        "date": None,
+        "subseconds": ""
+    }
 
 
 def test_get_date_custom_regex_optional_time():
